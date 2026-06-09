@@ -1,8 +1,8 @@
 # CarbonSifr — EXIOBASE Emission-Factor Activity Mapper
 
-Fine-tuning **Qwen2.5-14B-Instruct** with **LoRA** to map procurement items to one of 83 EXIOBASE emission-factor activities. Submission for the CarbonSifr AI Engineering Intern case study (June 2026).
+I fine-tuned **Qwen2.5-14B-Instruct** with **LoRA** to map messy procurement line items to one of 83 EXIOBASE emission-factor activities. This is my submission for the CarbonSifr AI Engineering Intern case study (June 2026).
 
-For each procurement item, the model outputs structured JSON:
+For each item, the model returns structured JSON:
 
 ```json
 {
@@ -16,48 +16,52 @@ For each procurement item, the model outputs structured JSON:
 
 ## Quick links
 
-- **Colab notebook (end-to-end):** [open in Colab](#) <!-- TODO: paste public Colab URL here -->
-- **LoRA adapter on HF Hub:** [`retroib/qwen2.5-14b-exiobase-lora`](https://huggingface.co/retroib/qwen2.5-14b-exiobase-lora) <!-- TODO: confirm URL after push -->
-- **Writeup (Task 2):** [`writeup.pdf`](./writeup.pdf)
+- **Notebook (end-to-end):** [`CarbonSifr_EXIOBASE_FineTune.ipynb`](./CarbonSifr_EXIOBASE_FineTune.ipynb) · [open in Colab](https://colab.research.google.com/github/ibrahim-2337/carbonsifr-exiobase-mapping/blob/main/CarbonSifr_EXIOBASE_FineTune.ipynb)
+- **LoRA adapter on HF Hub:** [`retroib/qwen2.5-14b-exiobase-lora`](https://huggingface.co/retroib/qwen2.5-14b-exiobase-lora)
+- **Writeup (Task 2):** [`writeup.md`](./writeup.md)
 - **AI usage log:** [`AI_USAGE.md`](./AI_USAGE.md)
 
 ---
 
-## Approach (one-paragraph)
+## Approach (one paragraph)
 
-A rule book of ~50 EXIOBASE classification rules was extracted from the 20 provided gold-labeled examples (tagged `[GOLD]`) and extended with EXIOBASE 3.10.1 / 3.11.1 activity definitions (tagged `[EXTENDED]`) to cover the 63 activities not represented in the gold set. The rule book + 3 synthetic few-shot examples + the full 83-activity catalog form the system prompt. An open-source teacher — **Qwen2.5-32B-Instruct** (Alibaba) — labeled 600 stratified procurement items as the silver training set. To validate label quality, a random 100-item subset was independently re-labeled by Claude under the same rule book as a **quality audit** (not as a label filter — Claude's labels do not enter training). The Qwen2.5-14B-Instruct student was then fine-tuned via LoRA (Unsloth + TRL) for 2 epochs and evaluated against the 20 CarbonSifr-provided gold labels (headline metric) and ~50 silver test items (secondary).
+I started from the 20 gold-labeled examples CarbonSifr provided. Reading through them, I wrote down the classification logic they implied as an explicit rule book (each rule tagged `[GOLD]`), then extended it from EXIOBASE 3.10.1 / 3.11.1 activity definitions to cover the 63 activities the gold set never touches (tagged `[EXTENDED]`). That rule book, plus three hand-written few-shot examples and the full 83-activity catalog, became the system prompt. For training data I had **Qwen2.5-32B-Instruct** (open-source) label 600 stratified items against the rule book, then brought in two independent reviewers: **Claude** re-labeled a random 100 (62% agreement — a quality signal only, never used as training labels) and **Gemini 2.5 Pro** labeled the other 500 (49% agreement), with the 254 disagreements adjudicated by hand. I fine-tuned the **Qwen2.5-14B-Instruct** student on the result via LoRA (Unsloth + TRL, 2 epochs) on a frozen 498/51/51 split, and graded everything against the 20 gold labels (the headline metric) and 51 held-out silver items (the clean, unleaked referee).
 
 ---
 
 ## Results
 
-| Metric | Embedding NN | Qwen-14B base (zero-shot) | Qwen-14B + LoRA |
-|---|---|---|---|
-| Exact-match accuracy (gold-20) | TBD | TBD | TBD |
-| Sector-match accuracy (gold-20) | TBD | TBD | TBD |
-| Exact-match (silver test) | TBD | TBD | TBD |
-| JSON parse rate | — | TBD | TBD |
-| Reason quality (LLM judged, 1–5) | — | TBD | TBD |
-| Expected calibration error (ECE) | — | TBD | TBD |
+Evaluated on identical test sets. The **silver-51** column is the unleaked referee — those items never informed the rule book and the fine-tuned model never trained on them.
 
-<!-- TODO: fill after Phase 7 evaluation -->
+| Metric | Embedding NN | Qwen-14B zero-shot | Qwen-14B + rule book | **Qwen-14B + LoRA** |
+|---|---|---|---|---|
+| Exact-match (gold-20) | 30.0 | 55.0 | 95.0\* | **95.0** |
+| Sector-match (gold-20) | 40.0 | 65.0 | 100.0\* | **95.0** |
+| Exact-match (silver-51) | 49.0 | 45.1 | 58.8 | **76.5** |
+| Sector-match (silver-51) | 56.9 | 58.8 | 68.6 | **84.3** |
 
-See [`writeup.pdf`](./writeup.pdf) for analysis of failure modes, production recommendation, and future work.
+\* Gold rule-book scores are optimistic — the rule book was partly derived from the gold items. On the clean **silver-51** test, fine-tuning lifts exact-match **+17.7 points** over the in-context base (58.8 → 76.5) and **+27.5 points** over the embedding baseline.
+
+See [`writeup.md`](./writeup.md) for failure modes, the production recommendation, and future work.
 
 ---
 
-## How to reproduce
+## How to run it
 
-The Colab notebook runs end-to-end on a single A100 (40 GB) instance and produces all artifacts.
+The fastest way to review this is to **just read the notebook** — it's committed with every cell's output inline, so you can see the whole run (labels, training curve, metrics, demo) without executing anything.
 
-1. Open the Colab notebook ([link above](#quick-links))
-2. Runtime → Change runtime type → **A100 GPU**
-3. Mount Google Drive when prompted (a `carbonsifr/` folder is created in your Drive root)
-4. Upload `Data.xlsx` to `MyDrive/carbonsifr/data/`
-5. Upload the contents of [`prompts/`](./prompts) to `MyDrive/carbonsifr/prompts/`
-6. Run all cells (Runtime → Run all)
+To run it yourself on Colab:
 
-Total wall-clock: ~3–4 hours end-to-end.
+1. Open the notebook in Colab (link above) and set the runtime to **A100** (Runtime → Change runtime type → A100 GPU).
+2. The notebook works out of a `carbonsifr/` folder in your Google Drive. It expects `Data.xlsx` in `carbonsifr/data/` and the contents of [`prompts/`](./prompts) in `carbonsifr/prompts/` — upload those first.
+3. **Run all.** The first cell mounts Drive (approve the popup), and the install cell **auto-restarts the runtime once** — this is expected (Colab ships an older `pyarrow` that has to be reloaded). When it reconnects, just **Run all** again and it flows straight through.
+
+Two flags at the top of the notebook control how much it rebuilds:
+
+- **`RETRAIN = False`** (default) loads the trained adapter from Drive — a full pass is ~10 minutes. Set it `True` to retrain the LoRA from the committed split (~40 min on an A100).
+- **`REGENERATE_SILVER = False`** (default) loads the cached silver labels. Set it `True` to regenerate them from scratch — note this needs the Qwen-32B teacher pass and the **manual Gemini labeling step** (done by hand in AI Studio), so it isn't a single-click path.
+
+> The cached silver labels, the splits, and the trained adapter live on my Drive — they're derived from the CarbonSifr data, so I don't redistribute them in the repo. A reviewer with the original `Data.xlsx` can regenerate everything end-to-end via the two flags above (`REGENERATE_SILVER=True` rebuilds the labels and splits; `RETRAIN=True` retrains the adapter).
 
 ---
 
@@ -65,37 +69,31 @@ Total wall-clock: ~3–4 hours end-to-end.
 
 ```
 .
-├── README.md                  # this file
-├── AI_USAGE.md                # documented AI assistance throughout the project
-├── writeup.pdf                # Task 2 — 1–2 page analysis
-├── CarbonSifr_EXIOBASE_FineTune.ipynb   # the Colab notebook (top-to-bottom reproducible)
-├── prompts/
-│   ├── rule_book.md           # 50+ rules tagged [GOLD] or [EXTENDED]
-│   ├── few_shot.md            # 3 synthetic worked examples
-│   ├── system_prompt.txt      # assembled system prompt used at inference
-│   └── user_template.txt      # per-item user message template
-├── artifacts/
-│   ├── comparison_table.csv   # headline metrics across all 3 systems
-│   ├── sector_confusion.png   # sector-level confusion matrix (fine-tuned)
-│   └── failure_cases.md       # qualitative analysis of 5 failure cases
-├── data/
-│   └── splits/
-│       ├── train.csv          # cross-checked silver labels used for training
-│       ├── val.csv            # held-out validation for epoch selection
-│       └── test_gold.csv      # the 20 CarbonSifr gold labels (headline test set)
-└── requirements.txt
+├── README.md                            # this file
+├── AI_USAGE.md                          # documented AI assistance throughout the project
+├── writeup.md                           # Task 2 — approach & findings
+├── CarbonSifr_EXIOBASE_FineTune.ipynb   # the notebook, committed with all cell outputs
+└── prompts/
+    ├── rule_book.md                     # ~50 rules tagged [GOLD] or [EXTENDED]
+    └── few_shot.md                      # 3 synthetic worked examples
 ```
+
+The notebook also generates, into a Google Drive `carbonsifr/` folder, the assembled
+`system_prompt.txt`, the train/val/test splits, and the prediction/metric CSVs. Those
+derive from the CarbonSifr-provided `Data.xlsx`, so — like `Data.xlsx` itself — they are
+**not redistributed** in this repo; they're visible inline in the committed notebook's
+outputs.
 
 ---
 
 ## Methodology highlights
 
 - **20 provided gold labels are never used for training.** They are the held-out test set + rule-book extraction source.
-- **Single-teacher silver labeling with Claude audit** — Qwen-32B labels all 600 items under the rule book; Claude independently re-labels a random 100-item sample to measure label quality. Two-teacher cross-checking (Qwen + Yi) was the original plan; switched to the audit under deadline constraints (documented in writeup).
+- **One teacher + two independent reviewers** — Qwen-32B labels all 600 items under the rule book; Claude audits a random 100 (62% agreement, label-quality signal only); Gemini 2.5 Pro labels the other 500 (49% agreement), with the 254 disagreements individually adjudicated.
+- **Frozen, leakage-free split** — the 498/51/51 train/val/test partition is frozen to disk, so the adapter is trained and evaluated on disjoint sets and the reported silver numbers are a true held-out measurement, reproducible across runs.
 - **Rule book is tagged for provenance** — every rule is either `[GOLD]` (derivable from one of the 20 labels) or `[EXTENDED]` (added from public EXIOBASE definitions). No hidden assumptions.
 - **Hierarchical metrics** — accuracy reported at both activity (83-class) and sector (16-class) levels; sector-level errors are far less harmful in production.
 - **Embedding-similarity baseline** included as a non-LLM reference point.
-- **Calibration reported** — expected calibration error and reliability diagram, not just accuracy.
 
 ---
 
@@ -105,22 +103,12 @@ Total wall-clock: ~3–4 hours end-to-end.
 |---|---|
 | Student model (fine-tuned) | Qwen2.5-14B-Instruct (4-bit, LoRA) |
 | Teacher (silver labeler) | Qwen2.5-32B-Instruct |
-| Quality auditor (100-item sample) | Claude (independent re-labeling under same rule book) |
+| Reviewer 1 — audit (100 items) | Claude (independent re-labeling under same rule book) |
+| Reviewer 2 — cross-check (500 items) | Gemini 2.5 Pro (independent labeling, disagreements adjudicated) |
 | Embedding baseline | BAAI/bge-large-en-v1.5 |
 | Fine-tuning framework | Unsloth + TRL `SFTTrainer` |
 | Compute | Colab Pro, NVIDIA A100 40 GB |
 
 ---
-
-## License
-
-Code in this repository is licensed under the MIT License — see `LICENSE` (if present).
-The fine-tuned LoRA adapter inherits the base model's license (Qwen2.5 Community License). The underlying CarbonSifr-provided data and rule book are not redistributed.
-
----
-
-## Acknowledgments
-
-CarbonSifr provided the case study brief, the 20 gold-labeled examples, and the 2,000-item procurement pool. EXIOBASE provides the activity taxonomy used for the classification targets.
 
 This project used AI assistance throughout — see [`AI_USAGE.md`](./AI_USAGE.md) for a full breakdown of what was delegated to AI tools and how outputs were verified.

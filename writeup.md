@@ -2,119 +2,118 @@
 
 **Author:** Ibrahim Ahmad
 **Project:** Fine-tune an open-source LLM to map procurement items to EXIOBASE emission-factor activities.
-**Date:** June 9, 2026
+**Date:** June 10, 2026
 
 ---
 
 ## 1. Approach
 
-**Data preparation.** The 20 CarbonSifr-provided gold labels served two roles: (1) as the source for extracting an explicit rule book of classification logic, and (2) as the **held-out test set** for headline metrics — they were never used as training data. To cover the remaining 63 of the 83 EXIOBASE activities not represented in the gold set, the rule book was extended using public EXIOBASE 3.10.1/3.11.1 activity definitions; every rule is tagged `[GOLD]` or `[EXTENDED]` for provenance. Three **synthetic** few-shot examples (not drawn from gold) were drafted to demonstrate the expected output voice and confidence calibration without contaminating evaluation.
+A brief note on terminology, since it recurs throughout. *Gold* refers to the 20 human-verified labels CarbonSifr provided — the ground truth. *Silver* refers to the 600 training labels I generated with LLMs, of which there are far more but which I trust correspondingly less. The design follows directly from that asymmetry: with only 20 reliable examples, I distilled them into an explicit rule book, used the rule book to mass-produce silver training data, fine-tuned the student model on the silver set, and evaluated everything against the gold I had held out. The substantive work is done by two open-source Qwen models — a 32B teacher and a 14B student — with Claude and Gemini serving as independent reviewers of the silver labels.
 
-**Silver labeling pipeline.** To produce training data, 600 procurement items were stratified-sampled from the unlabeled pool (gold IDs excluded) and labeled by **Qwen2.5-32B-Instruct** (Alibaba, open-source, 4-bit on A100) following the rule book. To validate label quality without consuming the full second-teacher labeling cost, a random **100-item subset** was independently re-labeled by Claude under the same rule book; agreement was measured post-hoc as a quality audit (agreement: **XX%**). Claude's audit labels did not enter training data — only Qwen's labels were used for fine-tuning. The original plan was a full two-teacher cross-check filter (Qwen + Yi-1.5-34B-Chat); this was substituted with the smaller audit under time constraints and is explicitly noted as a limitation.
+**Working from 20 examples.** The gold labels serve two purposes. First, I read through them manually and codified the classification logic they implied into a rule book. Second, I reserved them as the held-out test set and kept them out of training entirely. The difficulty is that 20 examples touch only 20 of the 83 EXIOBASE activities, so for the remaining 63 I extended the rule book using EXIOBASE's own published activity definitions. Every rule is tagged either `[GOLD]` (derivable from one of the 20 labels) or `[EXTENDED]` (added from the EXIOBASE documentation), making each rule's provenance explicit. I also authored three short few-shot examples by hand rather than reusing any gold item, to avoid leaking the test set into the prompt. The assembled system prompt — rule book, few-shot examples, and the full 83-activity catalog — comes to roughly 3.5k tokens.
 
-**Model selection.** **Qwen2.5-14B-Instruct** was chosen as the student model for its strong structured-output discipline (JSON formatting + reasoning) at a size that fine-tunes comfortably on a single A100 in 4-bit precision. Family-correlated bias between teacher (Qwen-32B) and student (Qwen-14B) is a known risk; the Claude audit on a 100-item sample provides a partial check, and headline metrics on the 20 CarbonSifr-provided gold labels (independent of either model family) remain the primary referee.
+**Labeling the silver set.** For training data I sampled 600 items from the unlabeled pool (gold IDs excluded), stratified by category, and had **Qwen2.5-32B-Instruct** label all of them against the rule book — open-source, running 4-bit on a Colab A100. Rather than trust a single model's output, I introduced two independent reviewers:
 
-**Fine-tuning setup.** LoRA via Unsloth + TRL `SFTTrainer`. Rank 16, alpha 16, target modules: all attention and MLP projections, 2 epochs, learning rate 2e-4 with cosine schedule, batch size 2 × gradient-accumulation 4, `packing=True`. Training data: ~XXX cross-checked silver labels. Validation set (held-out from training): ~50 silver items for epoch selection.
+- **Claude** re-labeled a random 100 of those items from scratch under the same rule book, without seeing Qwen's answers. It agreed with Qwen on **62%**. I treated this strictly as a quality signal; Claude's labels never entered training, and those 100 items retained their Qwen labels.
+- **Gemini 2.5 Pro** (via AI Studio) labeled the other 500. It agreed with Qwen on **49.2%** (246/500). I adjudicated the 254 disagreements individually: Gemini's call was the better one 124 times, Qwen's 130 times.
 
-**Evaluation.** Three systems compared on identical test sets:
-1. **Embedding nearest-neighbor** (BAAI/bge-large-en-v1.5) — non-LLM baseline
-2. **Qwen2.5-14B-Instruct base** (zero-shot with same prompt as fine-tuned) — LLM baseline
-3. **Qwen2.5-14B-Instruct + LoRA** — the fine-tuned student
+The final 600 labels therefore comprise 246 Qwen–Gemini agreements, 130 disagreements resolved in Qwen's favor, 124 resolved in Gemini's, and 100 from the Claude-audited slice. They cover 56 of the 83 activities; the rare classes remain sparsely represented, which becomes a limiting factor later. To be candid, this was not the original design — I had intended a fully automated two-teacher filter, but a second open-source teacher proved too slow within my time budget, so the method became this one-teacher-plus-two-reviewers arrangement. I record it as a limitation rather than a design choice.
 
-Metrics: exact-match accuracy, sector-match accuracy (16-class), JSON parse rate, expected calibration error (ECE), and LLM-as-judge reason quality (1–5).
+**Selecting the student.** I chose **Qwen2.5-14B-Instruct** as the model to fine-tune. It is consistently strong at structured output (clean JSON and coherent reasoning) and small enough to fine-tune comfortably on a single A100 in 4-bit. The evident risk is that teacher and student share a model family and may therefore share systematic blind spots; the cross-family reviewers (Claude, Gemini) and the gold test set — which favors no model family — are the safeguards against that.
+
+**Fine-tuning.** LoRA via Unsloth + TRL's `SFTTrainer`: rank 16, alpha 16, applied to all attention and MLP projections (approximately 0.46% of weights trainable), 2 epochs, learning rate 2e-4 on a cosine schedule, batch size 2 with gradient accumulation 4, packing enabled. I split the 600 silver labels into 498 train / 51 validation / 51 silver-test, routing any class too rare to stratify into the training set so that no split is left invalid. One issue I encountered and corrected is worth recording: I had initially been re-deriving the split on every notebook run, which meant the saved adapter was being evaluated on items it had partly trained on. I froze the split to disk so that train and test are provably disjoint, then retrained. Training itself was uneventful — validation loss moved 0.0196 → 0.0184 → 0.0183 over 126 steps and tracked the training loss throughout, with no sign of overfitting.
+
+**Evaluation protocol.** Four systems, assessed on the same two test sets (the 20 gold and the 51 held-out silver items):
+
+1. Embedding nearest-neighbor (BAAI/bge-large-en-v1.5) — a non-LLM baseline
+2. Qwen-14B zero-shot, activity list only, no rule book — the unaided model
+3. Qwen-14B with the full rule-book prompt, no fine-tuning
+4. Qwen-14B + LoRA — the fine-tuned student, same full prompt
+
+I report exact-match accuracy across all 83 classes and sector-match accuracy collapsed to the 16 sectors. The JSON parser achieved a 100% parse rate across every system during development, so parse rate is not a meaningful differentiator and I omitted it from the table.
 
 ---
 
 ## 2. Base vs Fine-Tuned Comparison
 
-### Headline metrics
+| Metric | Embedding NN | Qwen-14B zero-shot | Qwen-14B + rule book | **Qwen-14B + LoRA** |
+|---|---|---|---|---|
+| Exact-match (gold-20) | 30.0 | 55.0 | 95.0\* | **95.0** |
+| Sector-match (gold-20) | 40.0 | 65.0 | 100.0\* | **95.0** |
+| Exact-match (silver-51) | 49.0 | 45.1 | 58.8 | **76.5** |
+| Sector-match (silver-51) | 56.9 | 58.8 | 68.6 | **84.3** |
 
-| Metric | Embedding NN | Qwen-14B base | **Qwen-14B + LoRA** |
-|---|---|---|---|
-| Exact-match accuracy (gold-20) | TBD | TBD | **TBD** |
-| Sector-match accuracy (gold-20) | TBD | TBD | **TBD** |
-| Exact-match (silver test ~50) | TBD | TBD | **TBD** |
-| Top-3 accuracy (gold-20) | — | TBD | **TBD** |
-| JSON parse rate | — | TBD | **TBD** |
-| Reason quality (1–5, LLM judge) | — | TBD | **TBD** |
-| Expected calibration error (ECE) | — | TBD | **TBD** |
+\* The gold-20 rule-book scores should be read with caution. The rule book was written in part *from* those 20 items, so evaluating it against them approaches grading it on its own answer key. The silver-51 column is the fair comparison: those items never informed the rule book, and the fine-tuned model never trained on them.
 
-### Sector-level confusion matrix
+The silver column is therefore the one I weight most heavily. Read left to right, each component I added contributes measurably: 45.1% unaided, 58.8% once the rule book is in the prompt (+13.7 points), and 76.5% after fine-tuning (+17.7 points). Sector accuracy follows the same trajectory, 58.8 → 68.6 → 84.3. The +17.7-point gain from fine-tuning is the central result, and because the split is frozen and disjoint, it reflects genuine generalization rather than memorization of training items.
 
-![Sector confusion matrix](artifacts/sector_confusion.png)
+My interpretation is that fine-tuning converts the rule book from an instruction the model must consciously apply into learned behavior. With the rules in context the base model already performs reasonably (58.8%), but it applies them inconsistently — it possesses the rule and still fails to invoke it. After 498 worked examples it applies them far more reliably. The improvement at sector level (to 84.3%) is the result I would emphasize to a stakeholder: even when the model selects the wrong specific activity, it lands in the correct sector roughly five times out of six, and an adjacent error is considerably less costly in carbon accounting than a cross-sector one.
 
-### Key findings
+The fine-tuned model also clearly outperforms the non-LLM option. Embedding nearest-neighbor reaches 49.0% exact on silver against the fine-tuned model's 76.5% — a 27.5-point gap. This is intuitive: the descriptions are short and noisy ("BSFJ057 BbyR BESPOKE Waitress Winter" is an actual example), and a 498-row lookup table cannot find a good neighbor for every irregular item, whereas the LLM can reason from the text together with the rules. The model's value over plain similarity is real.
 
-The fine-tuned student lifted exact-match accuracy from **X%** (base zero-shot) to **Y%** (fine-tuned) on the 20 gold labels — a **Z-point gain**. At the sector level (16 classes), accuracy lifted from **X%** to **Y%**, indicating that even when the fine-tuned model is wrong on the precise activity, it usually picks one in the right sector. JSON parse rate improved from **X%** to **Y%**, suggesting the model also internalized the output schema, not just the label distribution. Calibration improved meaningfully (ECE dropped from **X** to **Y**), confirming the model learned the confidence-tier discipline from the rule book examples.
-
-Compared to the embedding nearest-neighbor baseline (**X%** exact-match), the fine-tuned LLM gained **Y points**, demonstrating that the value-add over a non-LLM solution is real and worth the fine-tuning effort.
+One result I should not understate: on gold-20 the fine-tuned model's sector score (95.0) is in fact *lower* than the rule-book base (100.0). The single gold item it misses on exact match it now also misses at sector level, where the base model at least remained in the correct neighborhood. On 20 items this is a single example, but it fairly illustrates the tradeoff — fine-tuning on a small, mildly noisy silver set sharpens the common cases while occasionally inducing overconfidence on an edge case.
 
 ---
 
 ## 3. Where the Fine-Tuned Model Still Struggles
 
-Three representative failure patterns from the held-out test set:
+Three misses, each illustrating a distinct error mode:
 
-**Failure case 1 — [Item description placeholder]**
-- Predicted: `[wrong activity]` (confidence X)
-- Gold: `[correct activity]`
-- **Diagnosis:** [why the model got it wrong — e.g., ambiguous description, conflicting rules, long-tail class without training coverage]
+**"Encore AV & Backdrop for the Long Service Awards Ceremony"** — the single gold-20 miss.
+Predicted `Other business services (74)` at 0.85; gold is `Other services (93)`.
+EXIOBASE contains two adjacent service catch-alls, (74) and (93), and AV/event production sits precisely on the boundary between them. This is also the sector miss noted in §2 — the in-context base placed it in the correct sector and the fine-tuned model did not. My reading is that fine-tuning drew it toward (74), the bin more frequent in training, after which it committed at 0.85 to a genuinely ambiguous case. That overconfidence on a borderline item is characteristic of the small-set risk.
 
-**Failure case 2 — [Item description placeholder]**
-- Predicted: `[wrong activity]` (confidence X)
-- Gold: `[correct activity]`
-- **Diagnosis:** [...]
+**"Champagne flute PC clear 180 Ml"**
+Predicted `Glass and glass products` at 0.95; gold is `Rubber and plastic products (25)`.
+"Champagne flute" strongly evokes glass, and the model fixed on the object while overlooking the "PC clear" qualifier — PC being polycarbonate, i.e. plastic. The same pattern appears in "Gypsum Channel GI 'W' Type", where it predicted `Cement, lime and plaster` from the word "Gypsum" when "GI" (galvanised iron) makes it `Fabricated metal products (28)`. Both are confident misses in which a salient but misleading term outweighed the true material, which sat in a modifier.
 
-**Failure case 3 — [Item description placeholder]**
-- Predicted: `[wrong activity]` (confidence X)
-- Gold: `[correct activity]`
-- **Diagnosis:** [...]
+**"MAXIPULL 2PLY 1X6 PURE M800"** (buyer sub-category: CLEANING & DISINFECTING SOLUTIONS)
+Predicted `Chemicals nec` at 0.85; gold is `Paper and paper products`.
+MAXIPULL is a 2-ply industrial paper wiper — a single-material paper product. The description, however, is essentially a product code with no material cue, so the model fell back on the buyer category, which describes the item's *function* (cleaning) rather than its *material* (paper). The category metadata is usually informative; here it pointed in the wrong direction.
 
-**Pattern across failures.** The fine-tuned model is reliable on items that match a single clear rule (single-material products, well-known service categories). It struggles most on:
-1. **Long-tail activities** with 0–2 silver training examples (e.g., niche raw materials)
-2. **Under-specified item descriptions** ("misc charge", "consulting fee") where the rule book correctly prescribes low confidence but the model doesn't always emit a low confidence
-3. **Multi-material items** where the materials-vs-furniture rule requires composition judgment
+Taken together, the model is dependable when there is one clear material or a well-known service type. Its difficulties cluster as follows:
 
-The 600-item silver set (~500 after cross-check) is on the lower end of the LoRA training set range — the long-tail issue would benefit most from additional silver labels.
+1. **Overlapping catch-all categories** — the two "nec" service bins, and "manufactured goods n.e.c. (36)" versus a specific material bin (for instance, "Sewing Trimming Scissor" was assigned to (36) rather than `Fabricated metal products (28)`).
+2. **Anchoring on the salient noun** while missing a material qualifier such as "PC" or "GI" elsewhere in the description.
+3. **Cryptic descriptions in which category metadata misleads** — a bare product code pushes the model onto `main_category`/`category_3`, which encodes function rather than material.
+4. **Long-tail activities** with few or no silver examples — I covered only 56 of 83 activities, so 27 classes carry zero training signal and exist for the model solely through the rule book in the prompt.
+5. **The reason field, which I degraded myself** — I trained on a placeholder reason string, so the model now produces a generic reason even when the activity and confidence are correct. It learned what to classify but not how to justify it; the fix is in §5.
+
+The 600-item set is on the small side for LoRA, and the two largest levers are simply enlarging it and restoring genuine reasons.
 
 ---
 
 ## 4. Would I Recommend the Fine-Tuned Model for Production?
 
-**Conditional yes**, with the following guardrails:
+Conditionally, yes — provided the following guardrails are in place:
 
-1. **JSON schema validator with one-shot repair.** Parse rate at evaluation was ~XX%; the remaining XX% should not fail open. Validate output JSON against schema; on failure, retry once with an explicit "valid JSON only" instruction.
-2. **Embedding nearest-neighbor fallback for `confidence_level < 0.4`.** The model's low-confidence predictions are honest signals — route those items to either a) the embedding baseline as a second opinion, or b) a human review queue.
-3. **Drift monitoring on `main_category` distribution.** The student was trained on a procurement mix dominated by Facility Management and Operating Supplies. If the inference distribution shifts (e.g., the customer adds an entirely new business unit), accuracy on novel categories will degrade silently. Monitor the main_category histogram of incoming items vs. training distribution; alert on KL divergence > threshold.
-4. **Periodic re-evaluation against a refreshed gold set.** 20 gold labels is too small to detect ~5% accuracy drift. Maintain a rolling 100-item human-labeled gold set, refreshed quarterly.
-5. **Reason field exposed to reviewers but not consumers.** The model's reasons are useful for human auditors validating predictions but should not be exposed to end users — they can occasionally be confidently wrong.
+1. **Validate the JSON with a one-shot repair.** Parse rate was 100% in evaluation, but production traffic is messier than a test set. Each output should be checked against the schema, and on a failure the system should retry once with an explicit "valid JSON only" instruction before proceeding.
+2. **Fall back to the embedding baseline (or a human) when `confidence_level < 0.4`.** The model's low-confidence predictions are an honest signal of uncertainty and should be routed to a safer path rather than trusted.
+3. **Monitor the `main_category` distribution for drift.** The student learned on a mix weighted toward Facility Management and Operating Supplies. If a customer introduces an entirely new business unit, accuracy on those novel items will degrade silently. Comparing the incoming category histogram against the training mix, with an alert on divergence, would catch this.
+4. **Re-evaluate against a refreshed gold set on a schedule.** Twenty gold labels cannot detect a 5% drift, since one item is already 5%. I would maintain a rolling 100-item human-labeled set and refresh it quarterly.
+5. **Restore the reason field, for auditors only.** Once trained on real reasons (§5), the explanations are genuinely useful to a human reviewer verifying a prediction, but I would not surface them to end users — they can be confidently wrong.
 
-If the deployment context allows these guardrails, the fine-tuned model offers material lift over both the embedding baseline and the base LLM at meaningfully lower per-inference cost than a frontier API.
+With those measures in place, the model delivers a real and reproducible improvement over both the embedding baseline (+27.5 exact) and the in-context base LLM (+17.7 exact) on the clean test, at meaningfully lower per-item cost than a frontier API.
 
 ---
 
 ## 5. What I Would Do Differently With More Data or Compute
 
-In rough priority order:
+Approximately in the order I would pursue them:
 
-**1. Active-learning loop over silver labels.** With ~3 more hours of compute, generate silver labels for the remaining ~1,400 items in the pool, then prioritize the 100 highest-disagreement items (where Qwen and Yi disagreed) for human review. This is the highest-leverage data investment because disagreements concentrate the label noise — fixing them lifts accuracy disproportionately.
-
-**2. Larger student model.** Qwen2.5-32B-Instruct as the student would likely close most of the remaining gap on long-tail activities. The same LoRA recipe applies; A100 80GB or H100 makes the training feasible.
-
-**3. Sector-specific specialist sub-models.** The 16 EXIOBASE sectors are very different domains. Training one LoRA per sector (gated by a sector-router) is a known-good architecture for hierarchical classification — would push accuracy higher at the cost of more inference complexity.
-
-**4. Two-teacher disagreement as training signal.** Currently we discard disagreement items. Instead, train the student to predict the *agreement* of two teachers; this self-supervised signal can be used to detect items that need human review at inference time.
-
-**5. Hand-label an additional 100–200 test items.** 20 gold is too small for confident headline metrics; statistical fluctuations dominate. With 200 hand-labeled gold items, you can detect 2–3 point accuracy differences reliably — enabling rigorous model selection between candidate fine-tunes.
-
-**6. Embedding-rerank hybrid.** Combine the LLM's top-3 predictions with embedding nearest-neighbor reranking. Should improve top-1 accuracy by 2–4 points at marginal inference cost.
+1. **Train on real reasons rather than a placeholder.** This is the cheapest improvement by a wide margin. Qwen and Gemini already produced a genuine justification for every label; I need only retain it in the training target instead of the placeholder string I used. It requires no additional labeling and restores the model's ability to explain itself.
+2. **Run an active-learning loop to fill the long tail.** With a few additional hours of compute I would label the remaining ~1,400 pool items, then route the highest-disagreement cases (I have already adjudicated 254 Qwen-vs-Gemini splits) to a human. Disagreements concentrate the label noise, so resolving them yields gains out of proportion to their number, and the added volume targets the 27 currently uncovered activities directly.
+3. **Evaluate a larger or longer-trained student.** Qwen2.5-32B as the student would likely close most of the long-tail gap; the same LoRA recipe runs on an 80GB A100 or an H100.
+4. **Use teacher disagreement as a signal rather than discarding it.** Instead of only adjudicating disagreements, I could train the model to predict *whether the two teachers would agree* — an inexpensive self-supervised flag for items that warrant human review.
+5. **Hand-label a further 100–200 test items.** Twenty gold items are too few to trust small differences (again, one item is 5%). At roughly 200 gold items, a 2–3 point improvement becomes distinguishable from noise, which would allow principled selection between candidate fine-tunes.
+6. **Add an embedding rerank on top.** Combining the LLM's top-3 with embedding nearest-neighbor reranking should be worth a few top-1 points at marginal cost.
 
 ---
 
 ## Appendix — AI Usage
 
-See [`AI_USAGE.md`](./AI_USAGE.md) in the project repository for a complete phase-by-phase log of AI assistance used in this project and verification approach.
+See [`AI_USAGE.md`](./AI_USAGE.md) for a complete phase-by-phase log of how I used AI tools on this project and how I verified their output.
 
 ---
 
-*Code, notebook, LoRA adapter, and reproducibility instructions: https://github.com/ibrahim-2337/carbonsifr-exiobase-mapping*
+*Code, notebook, LoRA adapter, and reproduction instructions: https://github.com/ibrahim-2337/carbonsifr-exiobase-mapping*
