@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Colab + local notebook scratch
+*-checkpoint.ipynb
+
+# Model weights (we use HF Hub for distribution, don't commit them)
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.gguf
+checkpoints/
+lora_adapter/
+
+# Large intermediate data (regeneratable from notebook)
+silver_labels/*.jsonl
+silver_labels/qwen_labels.csv
+silver_labels/yi_labels.csv
+artifacts/baseline_predictions.csv
+artifacts/finetuned_predictions.csv
+
+# The raw CarbonSifr data is not redistributed
+data/Data.xlsx
+
+# Internal planning docs (kept local)
+plan.md
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
