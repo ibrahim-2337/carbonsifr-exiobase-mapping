@@ -25,7 +25,7 @@ For each procurement item, the model outputs structured JSON:
 
 ## Approach (one-paragraph)
 
-A rule book of ~50 EXIOBASE classification rules was extracted from the 20 provided gold-labeled examples (tagged `[GOLD]`) and extended with EXIOBASE 3.10.1 / 3.11.1 activity definitions (tagged `[EXTENDED]`) to cover the 63 activities not represented in the gold set. The rule book + 3 synthetic few-shot examples + the full 83-activity catalog form the system prompt. Two open-source teachers from different model families — **Qwen2.5-32B-Instruct** (Alibaba) and **Yi-1.5-34B-Chat** (01.AI) — independently labeled 600 stratified procurement items. Only items where both teachers agreed on `activity` were kept as the silver training set (~510 items after filtering), preserving cross-family bias filtering while keeping the pipeline fully open-source. The Qwen2.5-14B-Instruct student was then fine-tuned via LoRA (Unsloth + TRL) for 2 epochs and evaluated against the 20 CarbonSifr-provided gold labels (headline metric) and ~50 silver test items (secondary).
+A rule book of ~50 EXIOBASE classification rules was extracted from the 20 provided gold-labeled examples (tagged `[GOLD]`) and extended with EXIOBASE 3.10.1 / 3.11.1 activity definitions (tagged `[EXTENDED]`) to cover the 63 activities not represented in the gold set. The rule book + 3 synthetic few-shot examples + the full 83-activity catalog form the system prompt. An open-source teacher — **Qwen2.5-32B-Instruct** (Alibaba) — labeled 600 stratified procurement items as the silver training set. To validate label quality, a random 100-item subset was independently re-labeled by Claude under the same rule book as a **quality audit** (not as a label filter — Claude's labels do not enter training). The Qwen2.5-14B-Instruct student was then fine-tuned via LoRA (Unsloth + TRL) for 2 epochs and evaluated against the 20 CarbonSifr-provided gold labels (headline metric) and ~50 silver test items (secondary).
 
 ---
 
@@ -91,7 +91,7 @@ Total wall-clock: ~3–4 hours end-to-end.
 ## Methodology highlights
 
 - **20 provided gold labels are never used for training.** They are the held-out test set + rule-book extraction source.
-- **Cross-family two-teacher labeling** (Qwen + Yi) filters single-model labeling errors.
+- **Single-teacher silver labeling with Claude audit** — Qwen-32B labels all 600 items under the rule book; Claude independently re-labels a random 100-item sample to measure label quality. Two-teacher cross-checking (Qwen + Yi) was the original plan; switched to the audit under deadline constraints (documented in writeup).
 - **Rule book is tagged for provenance** — every rule is either `[GOLD]` (derivable from one of the 20 labels) or `[EXTENDED]` (added from public EXIOBASE definitions). No hidden assumptions.
 - **Hierarchical metrics** — accuracy reported at both activity (83-class) and sector (16-class) levels; sector-level errors are far less harmful in production.
 - **Embedding-similarity baseline** included as a non-LLM reference point.
@@ -104,8 +104,8 @@ Total wall-clock: ~3–4 hours end-to-end.
 | Component | Choice |
 |---|---|
 | Student model (fine-tuned) | Qwen2.5-14B-Instruct (4-bit, LoRA) |
-| Teacher 1 (primary labeler) | Qwen2.5-32B-Instruct |
-| Teacher 2 (cross-check) | Yi-1.5-34B-Chat (01.AI) |
+| Teacher (silver labeler) | Qwen2.5-32B-Instruct |
+| Quality auditor (100-item sample) | Claude (independent re-labeling under same rule book) |
 | Embedding baseline | BAAI/bge-large-en-v1.5 |
 | Fine-tuning framework | Unsloth + TRL `SFTTrainer` |
 | Compute | Colab Pro, NVIDIA A100 40 GB |
